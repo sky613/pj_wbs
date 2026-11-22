@@ -1,0 +1,91 @@
+name: team-wbs
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: wbs
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wbs-local-development}
+      POSTGRES_DB: wbs
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U wbs -d wbs]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  api:
+    build: ./backend
+    profiles: [dev]
+    environment:
+      DATABASE_URL: postgresql://wbs:${POSTGRES_PASSWORD:-wbs-local-development}@db:5432/wbs
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    command: sh -c "python -m app.migrate && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    volumes:
+      - ./backend:/app
+    ports:
+      - "127.0.0.1:${APP_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+  web:
+    image: node:22-alpine
+    profiles: [dev]
+    working_dir: /app
+    command: sh -c "npm ci && npm run dev -- --host 0.0.0.0"
+    environment:
+      API_PROXY_TARGET: http://api:8000
+    volumes:
+      - ./frontend:/app
+      - node_modules:/app/node_modules
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-5173}:5173"
+    depends_on:
+      - api
+  app:
+    build: .
+    profiles: [prod]
+    environment:
+      DATABASE_URL: postgresql://wbs:${POSTGRES_PASSWORD:-wbs-local-development}@db:5432/wbs
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    ports:
+      - "127.0.0.1:${APP_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          CMD,
+          python,
+          -c,
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+  test-db:
+    image: postgres:16-alpine
+    profiles: [test]
+    environment:
+      POSTGRES_USER: wbs
+      POSTGRES_PASSWORD: test-only
+      POSTGRES_DB: wbs_test
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U wbs -d wbs_test]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+  test:
+    build: ./backend
+    profiles: [test]
+    environment:
+      DATABASE_URL: postgresql://wbs:test-only@test-db:5432/wbs_test
+    command: sh -c "python -m app.migrate && python -m unittest discover -s tests -v"
+    depends_on:
+      test-db:
+        condition: service_healthy
+volumes:
+  postgres_data:
+  node_modules:
